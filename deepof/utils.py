@@ -2070,6 +2070,9 @@ def load_segmentation_model(path):
     return predictor
 
 
+def get_first_length(arena_corners):
+    return math.dist(arena_corners[0], arena_corners[1])
+    
 def get_arenas(
     coordinates: coordinates,
     tables: table_dict,
@@ -2128,10 +2131,9 @@ def get_arenas(
 
     get_arena = True
     propagate_rois=[]
+    arena_corners=None
+    roi_corners={}
     
-
-    def get_first_length(arena_corners):
-        return math.dist(arena_corners[0], arena_corners[1])
     
     #set message for user
     if "polygon" in arena:
@@ -2165,7 +2167,10 @@ def get_arenas(
                     videos,
                     list_of_rois=list_of_rois,
                     get_arena=get_arena,
+                    arena_dims=arena_dims,
                     test=test,
+                    arena_corners=arena_corners,
+                    roi_corners=roi_corners,
                 )
 
                 if arena_corners is None:
@@ -2285,7 +2290,10 @@ def get_arenas(
                         videos,
                         list_of_rois=list_of_rois,
                         get_arena=get_arena,
+                        arena_dims=arena_dims,
                         test=test,
+                        arena_corners=arena_corners,
+                        roi_corners=roi_corners,
                     )
                     get_arena=False
 
@@ -2677,7 +2685,7 @@ def get_roi_colors():
        (153,  15,  98)]
 
 def retrieve_corners_from_image(
-    frame: np.ndarray, arena_type: str, cur_vid: int, videos: list, current_roi: int = 0, test: bool = False
+    frame: np.ndarray, arena_type: str, cur_vid: int, videos: list, current_roi: int = 0, arena_dims: float = 1.0, norm_dist: float = None, test: bool = False
 ):  # pragma: no cover
     """Open a window and waits for the user to click on all corners of the polygonal arena.
 
@@ -2767,6 +2775,23 @@ def retrieve_corners_from_image(
                             color,
                             2,
                         )
+        
+        if len(corners) > 1 and "polygonal" in arena_type:
+            if norm_dist is None:
+                norm_dist=get_first_length(corners)
+            cur_dist=math.dist(corners[-2], corners[-1])
+            text="last len in mm: " + str(np.round((cur_dist*(arena_dims/norm_dist))*100)/100)
+            cv2.putText(
+                frame_copy,
+                text,
+                (45, 45),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA
+            )
+
 
         # Close the polygon
         if len(corners) > 2:
@@ -2824,7 +2849,7 @@ def retrieve_corners_from_image(
 
 
 def extract_polygonal_arena_coordinates(
-    video_path: str, arena_type: str, video_index: int, videos: list, list_of_rois: list = 0, get_arena: bool = True, test: bool = False, 
+    video_path: str, arena_type: str, video_index: int, videos: list, list_of_rois: list = 0, get_arena: bool = True, arena_dims: float = 1.0, test: bool = False, arena_corners: list = None, roi_corners: dict = {},
 ):  # pragma: no cover
     """Read a random frame from the selected video, and opens an interactive GUI to let the user delineate the arena manually.
 
@@ -2853,24 +2878,33 @@ def extract_polygonal_arena_coordinates(
     _, numpy_im = current_video_cap.read()
     current_video_cap.release()
 
-    arena_corners = None
-    roi_corners = None
-
     # open gui and let user pick corners
+    arena_corners_out = None
     if get_arena:
-        arena_corners = retrieve_corners_from_image(
+        arena_corners_out = retrieve_corners_from_image(
             numpy_im,
             arena_type,
             video_index,
             videos,
             current_roi=0,
+            arena_dims=arena_dims,
             test=test,
         )
+    if arena_corners_out is not None:
+        if arena_type == "polygonal-manual":
+            norm_dist = get_first_length(arena_corners_out)
+        else: 
+            cur_arena_params = fit_ellipse_to_polygon(arena_corners_out)
+            norm_dist=np.mean([cur_arena_params[1][0], cur_arena_params[1][1]])* 2
+    else:
+        if arena_type == "polygonal-manual":
+            norm_dist = get_first_length(arena_corners)
+        else: 
+            cur_arena_params = fit_ellipse_to_polygon(arena_corners)
+            norm_dist=np.mean([cur_arena_params[1][0], cur_arena_params[1][1]])* 2
 
     #let user pick corners for rois
     if len(list_of_rois) > 0:
-
-        roi_corners= {}
 
         for k in list_of_rois:
             cur_roi_corners = retrieve_corners_from_image(
@@ -2879,11 +2913,13 @@ def extract_polygonal_arena_coordinates(
                 video_index,
                 videos,
                 current_roi=k,
+                arena_dims=arena_dims,
+                norm_dist=norm_dist,
                 test=test,
             )
             roi_corners[k] =cur_roi_corners
 
-    return arena_corners, roi_corners, numpy_im.shape[0], numpy_im.shape[1]
+    return arena_corners_out, roi_corners, numpy_im.shape[0], numpy_im.shape[1]
 
 
 def fit_ellipse_to_polygon(polygon: list):  # pragma: no cover
