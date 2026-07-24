@@ -132,7 +132,8 @@ def load_project(
         video_format: str = ".mp4",
         video_scale: int = 1,
         number_of_rois = 0,
-        fast_implementations_threshold: int = 50000,) -> coordinates:  # pragma: no cover
+        fast_implementations_threshold: int = 50000,
+        bit_precision: int = None,) -> coordinates:  # pragma: no cover
     """Load a pre-saved pickled Coordinates object. Will update Coordinate objects from older versions of deepof (down to 0.7) to work with this version. 
     Very old projects will be recreated during loading with the current version of Deepof. For this purpose input arguments can be set just as in a recular project definition.
 
@@ -162,6 +163,7 @@ def load_project(
         video_scale (int): diameter of the arena in mm (if the arena is round) or length of the first specified arena side (if the arena is polygonal).            
         number_of_rois (int): number of behavior rois to be drawn during project creation, default = 0,
         fast_implementations_threshold (int): If the total number of frames in the project is larger than this, numba implementations of all functions with a numba option will be used.
+        bit_precision (int): Minimum bit precision used for the biggest tables. Default is None for auto precision (64 and gets decreased for large projects). Can be manually set to 32 or 64
 
     Returns:
         coordinates (deepof_coordinates): Pre-run coordinates object.
@@ -232,6 +234,7 @@ def load_project(
             video_scale=str(coordinates._arena_dims)+ " mm",
             number_of_rois = number_of_rois,
             fast_implementations_threshold=fast_implementations_threshold,
+            bit_precision=bit_precision
         )
 
         coordinates=redone_project.create(force=True)
@@ -301,7 +304,7 @@ class Project:
             video_scale (int): diameter of the arena in mm (if the arena is round) or length of the first specified arena side (if the arena is polygonal).            
             number_of_rois (int): number of behavior rois to be drawn during project creation, default = 0,
             fast_implementations_threshold (int): If the total number of frames in the project is larger than this, numba implementations of all functions with a numba option will be used.
-
+            bit_precision (int): Minimum bit precision used for the biggest tables. Default is None for auto precision (64 and gets decreased for large projects). Can be manually set to 32 or 64
         """
         # Set version
         self.version=current_deepof_version
@@ -313,6 +316,7 @@ class Project:
         self.table_path = table_path
         self.source_table_path = table_path
         self.trained_path = os.path.join(project_path, project_name, "trained_models")
+
 
         # Detect files to load from disk
         self.table_format = table_format
@@ -435,6 +439,16 @@ class Project:
             self.run_numba = True
         if frames_max > 360000 or frames_sum > 900000: #roughly one 4 hour video at 25 fps or 10 hours of recording material in total
             self.very_large_project = True
+        if bit_precision is None:
+            self.bit_precision = BitPrecision.parse(64)
+            if self.very_large_project:
+                self.bit_precision = BitPrecision.parse(32)
+                print(
+                    f"\033[33mInfo! Large project detected! Reduced bit precision to 32 bit! (You can manually set it to 32, or 64 bit with input bit_precision.)\033[0m"
+                )
+        else:
+            self.bit_precision = BitPrecision.parse(bit_precision)
+
 
         # If the bodypart names in his table deviate from the ones deepOF expects, the user can rename them 
         rename_bodyparts_dict = self.rename_bodyparts(rename_bodyparts, table_format)
@@ -976,8 +990,8 @@ class Project:
                 quality_path = os.path.join(save_dir, f"{key}_likelihood")
                 table_path = os.path.join(save_dir, key)
                 
-                final_lik_dict[key] = save_dt(lik_dict_single[key], quality_path, self.very_large_project)
-                final_tab_dict[key] = save_dt(table_dict_single[key], table_path, self.very_large_project)
+                final_lik_dict[key] = save_dt(lik_dict_single[key].astype(self.bit_precision.dtype), quality_path, self.very_large_project)
+                final_tab_dict[key] = save_dt(table_dict_single[key].astype(self.bit_precision.dtype), table_path, self.very_large_project)
                 
                 pbar.update(1)
 
@@ -1024,7 +1038,7 @@ class Project:
 
                 #save scaled table
                 distance_path = os.path.join(self.project_path, self.project_name, 'Tables',key, key)
-                tab_dict[key] = save_dt(tab,distance_path,self.very_large_project)
+                tab_dict[key] = save_dt(tab.astype(self.bit_precision.dtype),distance_path,self.very_large_project)
 
                 pbar.update()
 
@@ -1059,7 +1073,7 @@ class Project:
 
                 #save distances for active table
                 distance_path = os.path.join(self.project_path, self.project_name, 'Tables',key, key + '_dist')
-                distance_dict[key] = save_dt(distance_tab,distance_path,self.very_large_project)
+                distance_dict[key] = save_dt(distance_tab.astype(self.bit_precision.dtype),distance_path,self.very_large_project)
 
                 #clean up
                 del distance_tab
@@ -1087,7 +1101,7 @@ class Project:
             i in tab.columns.levels[0] for i in nodes
         ], "Nodes should correspond to existent bodyparts"
 
-        distance_tab = deepof.utils.bpart_distance(tab)
+        distance_tab = deepof.utils.bpart_distance(tab, self.bit_precision)
         distance_tab = distance_tab.loc[
                 :, [np.all([i in nodes for i in j]) for j in distance_tab.columns]
             ]
@@ -1149,7 +1163,7 @@ class Project:
 
                     # get path for saving
                     angle_path = os.path.join(self.project_path, self.project_name, 'Tables',key, key + '_angle')
-                    angle_dict[key] = save_dt(dats,angle_path,self.very_large_project)
+                    angle_dict[key] = save_dt(dats.astype(self.bit_precision.dtype),angle_path,self.very_large_project)
                     pbar.update()
 
 
@@ -1264,7 +1278,7 @@ class Project:
 
                     # change dictionary to table and check size
                     areas_table = pd.DataFrame(
-                        areas_animal_dict, index=current_animal_table.index
+                        areas_animal_dict, index=current_animal_table.index, dtype=self.bit_precision.dtype
                     )
                     if animal_id is not None:
                         areas_table.columns = [
@@ -1278,7 +1292,7 @@ class Project:
                     current_table = pd.concat([current_table, areas_table], axis=1)
 
                 area_path = os.path.join(self.project_path, self.project_name, 'Tables',key, key + '_area')
-                all_areas_dict[key] = save_dt(current_table,area_path,self.very_large_project)
+                all_areas_dict[key] = save_dt(current_table.astype(self.bit_precision.dtype),area_path,self.very_large_project)
                 pbar.update()
 
         if not_all_area_warn:
@@ -1436,6 +1450,7 @@ class Project:
             run_numba=self.run_numba,
             very_large_project=self.very_large_project,
             version=self.version,
+            bit_precision=self.bit_precision,
         )
 
         #set supervised parameters via initial reset (sets values to defaults)
@@ -1602,6 +1617,7 @@ class Coordinates:
         run_numba: bool = False,
         very_large_project: bool = False,
         version: str = None,
+        bit_precision: int = 64,
     ):
         """Class for storing the results of a ran project. Methods are mostly setters and getters in charge of tidying up the generated tables.
 
@@ -1633,6 +1649,7 @@ class Coordinates:
             run_numba (bool): Determines if numba versions of functions should be used (run faster but require initial compilation time on first run)
             very_large_project (bool): Decides if memory efficient data loading and saving should be used
             version (str): version of deepof this object was created with
+            bit_precision (int): Minimum bit precision used for the biggest tables. Default is 0 for auto precision (64 and gets decreased for large projects). Can be manually set to 16, 32 or 64
 
         """
         self._project_path = project_path
@@ -1665,6 +1682,7 @@ class Coordinates:
         self._run_numba = run_numba
         self._very_large_project = very_large_project
         self._version = version
+        self._bit_precision = bit_precision
         self._custom_behaviors = None
         self._custom_continuous_behavior_names=[]
 
@@ -2023,7 +2041,7 @@ class Coordinates:
         # 10. Handle missing animals based on quality data
         table_dict = deepof.utils.set_missing_animals(self, {key: tab}, quality)
         
-        return table_dict[key]
+        return table_dict[key].astype(self._bit_precision.dtype)
            
             
     def get_distances(
@@ -2145,7 +2163,7 @@ class Coordinates:
             
             tab = tab.loc[:, list(set(sorted_edges) & set(tab.columns))]
       
-        return tab
+        return tab.astype(self._bit_precision.dtype)
     
    
     def get_angles(
@@ -2262,7 +2280,7 @@ class Coordinates:
         # 6. Handle missing animals based on quality data
         tab = deepof.utils.set_missing_animals(self, {key: tab}, quality)[key]
 
-        return tab
+        return tab.astype(self._bit_precision.dtype)
     
   
     def get_areas(
@@ -2375,7 +2393,7 @@ class Coordinates:
         # 6. Handle missing animals based on quality data
         tab = deepof.utils.set_missing_animals(self, {key: tab}, quality)[key]
     
-        return tab
+        return tab.astype(self._bit_precision.dtype)
 
 
     def get_videos(self, full_paths: bool = False, play: bool = False):
@@ -2877,7 +2895,7 @@ class Coordinates:
                         #load table if not already loaded
                         result = get_dt(to_preprocess[k], key, return_path=True)
                         if result and len(result)==2 :
-                            tab = result[0]
+                            tab = result[0].astype(self._bit_precision.dtype)
                             table_path = result[1]
                         tab_nodes = tab[:, :, node_sorting_indices]
                         tab_edges = tab[:, :, edge_sorting_indices] 
@@ -2925,7 +2943,7 @@ class Coordinates:
                         quality = get_dt(quality_to_load, key)
                         tab[speed_feature_names] = quality[speed_feature_names]
 
-                    tab = np.array(tab)
+                    tab = np.array(tab).astype(self._bit_precision.dtype)
 
                     # Split node features (positions, speeds) from edge features (distances)
                     dataset = (
